@@ -1,7 +1,11 @@
 """
 Unit tests for cost_analysis.py
 """
+import json
 from unittest.mock import MagicMock
+
+import pytest
+from botocore.exceptions import ClientError
 
 from cost_analysis import CostAnalyzer
 
@@ -164,3 +168,46 @@ class TestCostAnalyzer:
         self.analyzer.print_summary([], top_n=5)
         captured = capsys.readouterr()
         assert "No cost data" in captured.out
+
+
+class TestFailurePaths:
+    """Error handling that decides whether a run fails loudly or silently."""
+
+    def setup_method(self):
+        self.analyzer = CostAnalyzer(region="us-east-1")
+        self.analyzer.client = MagicMock()
+
+    def test_query_error_exits_nonzero(self, capsys):
+        """A Cost Explorer failure must exit 1, not return partial data as if
+        the account simply had no spend."""
+        self.analyzer.client.get_cost_and_usage.side_effect = ClientError(
+            {"Error": {"Code": "AccessDeniedException"}}, "GetCostAndUsage"
+        )
+        with pytest.raises(SystemExit) as excinfo:
+            self.analyzer.get_cost_and_usage("2026-02-01", "2026-03-01")
+        assert excinfo.value.code == 1
+        assert "Error querying Cost Explorer" in capsys.readouterr().err
+
+    def test_export_to_csv_empty_input_writes_no_file(self, tmp_path):
+        output = tmp_path / "report.csv"
+        self.analyzer.export_to_csv([], str(output))
+        assert not output.exists()
+
+    def test_export_to_json_empty_input_still_writes(self, tmp_path):
+        """Asymmetric by design: only the CSV writer guards against empty
+        input, so the JSON path writes an empty array."""
+        output = tmp_path / "report.json"
+        self.analyzer.export_to_json([], str(output))
+        assert json.loads(output.read_text()) == []
+
+    def test_export_to_csv_write_failure_exits_nonzero(self, tmp_path):
+        output = tmp_path / "no-such-dir" / "report.csv"
+        with pytest.raises(SystemExit) as excinfo:
+            self.analyzer.export_to_csv([{"Value": "Amazon EC2", "Cost": 1.0}], str(output))
+        assert excinfo.value.code == 1
+
+    def test_export_to_json_write_failure_exits_nonzero(self, tmp_path):
+        output = tmp_path / "no-such-dir" / "report.json"
+        with pytest.raises(SystemExit) as excinfo:
+            self.analyzer.export_to_json([{"Value": "Amazon EC2"}], str(output))
+        assert excinfo.value.code == 1

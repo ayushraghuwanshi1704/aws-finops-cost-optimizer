@@ -1,7 +1,7 @@
 """
 Unit tests for commitment_coverage.py
 """
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from botocore.exceptions import ClientError
 
@@ -128,6 +128,74 @@ class TestReservations:
         assert analyzer.reservation_coverage(days=30) is None
 
 
+class TestDataUnavailableBecomesAbsentSection:
+    """Every section must degrade to None rather than raise, because main()
+    serialises the whole report straight to JSON."""
+
+    def test_savings_plans_coverage(self):
+        analyzer = _analyzer()
+        analyzer.client.get_savings_plans_coverage.side_effect = _data_unavailable(
+            "GetSavingsPlansCoverage"
+        )
+        assert analyzer.savings_plans_coverage(days=30) is None
+
+    def test_reservation_utilization(self):
+        analyzer = _analyzer()
+        analyzer.client.get_reservation_utilization.side_effect = _data_unavailable(
+            "GetReservationUtilization"
+        )
+        assert analyzer.reservation_utilization(days=30) is None
+
+    def test_reservation_coverage(self):
+        analyzer = _analyzer()
+        analyzer.client.get_reservation_coverage.side_effect = _data_unavailable(
+            "GetReservationCoverage"
+        )
+        assert analyzer.reservation_coverage(days=30) is None
+
+
+class TestConstructor:
+
+    def test_cost_explorer_client_region(self):
+        """Cost Explorer is a global API served from us-east-1 — overriding it
+        with a deployment region would break every call."""
+        with patch("commitment_coverage.boto3.client") as client:
+            analyzer = CommitmentAnalyzer()
+        client.assert_called_once_with("ce", region_name="us-east-1")
+        assert analyzer.client is client.return_value
+
+
+class TestBuildReport:
+    """The composition layer that feeds _observations was never exercised."""
+
+    def test_report_shape_and_window(self):
+        analyzer = _analyzer()
+        sp_util = {"UtilizationPercentage": 99.0, "UnusedCommitmentUSD": 1.0}
+        with patch.object(analyzer, "savings_plans_utilization",
+                          return_value=sp_util) as util, \
+                patch.object(analyzer, "savings_plans_coverage", return_value=None), \
+                patch.object(analyzer, "reservation_utilization", return_value=None), \
+                patch.object(analyzer, "reservation_coverage", return_value=None):
+            report = analyzer.build_report(days=45)
+
+        assert report["AnalysisPeriodDays"] == 45
+        assert set(report["SavingsPlans"]) == {"Utilization", "Coverage"}
+        assert set(report["ReservedInstances"]) == {"Utilization", "Coverage"}
+        assert report["SavingsPlans"]["Utilization"] == sp_util
+        util.assert_called_once_with(45)
+
+    def test_observations_derived_from_assembled_report(self):
+        analyzer = _analyzer()
+        with patch.object(analyzer, "savings_plans_utilization", return_value=None), \
+                patch.object(analyzer, "savings_plans_coverage", return_value=None), \
+                patch.object(analyzer, "reservation_utilization", return_value=None), \
+                patch.object(analyzer, "reservation_coverage", return_value=None):
+            report = analyzer.build_report(days=30)
+
+        assert any("No Savings Plans or Reserved Instances" in o
+                   for o in report["Observations"])
+
+
 class TestObservations:
 
     def test_low_utilization_flagged(self):
@@ -140,6 +208,29 @@ class TestObservations:
         }
         observations = CommitmentAnalyzer._observations(report)
         assert any("80.0%" in o for o in observations)
+
+    def test_low_coverage_flagged(self):
+        report = {
+            "SavingsPlans": {
+                "Utilization": None,
+                "Coverage": {"CoveragePercentage": 42.0, "UncoveredOnDemandCostUSD": 900.0},
+            },
+            "ReservedInstances": {"Utilization": None, "Coverage": None},
+        }
+        observations = CommitmentAnalyzer._observations(report)
+        assert any("42.0%" in o and "$900.0" in o for o in observations)
+
+    def test_low_reservation_utilization_flagged(self):
+        report = {
+            "SavingsPlans": {"Utilization": None, "Coverage": None},
+            "ReservedInstances": {
+                "Utilization": {"UtilizationPercentage": 70.0, "UnusedHours": 40.0,
+                                "NetRISavingsUSD": 10.0},
+                "Coverage": None,
+            },
+        }
+        observations = CommitmentAnalyzer._observations(report)
+        assert any("70.0%" in o and "40.0 unused hours" in o for o in observations)
 
     def test_no_commitments_recommends_modelling(self):
         report = {

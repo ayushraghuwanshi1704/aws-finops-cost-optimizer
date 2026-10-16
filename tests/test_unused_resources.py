@@ -123,6 +123,32 @@ class TestOldSnapshots:
             findings = finder.find_old_ebs_snapshots(retention_days=30)
         assert findings == []
 
+    def test_snapshot_within_retention_not_flagged(self):
+        """The cutoff branch protects a perfectly healthy recent snapshot from
+        being reported as waste."""
+        finder = _finder()
+        self._with_snapshots(finder, [{
+            "SnapshotId": "snap-new",
+            "VolumeSize": 40,
+            "StartTime": datetime.now(timezone.utc) - timedelta(days=5),
+        }])
+        with patch("unused_resources.boto3.client") as client:
+            client.return_value.get_caller_identity.return_value = {"Account": "123"}
+            findings = finder.find_old_ebs_snapshots(retention_days=30)
+        assert findings == []
+
+    def test_missing_volume_size_costs_zero(self):
+        """Snapshots with no VolumeSize report 0 rather than raising."""
+        finder = _finder()
+        self._with_snapshots(finder, [{
+            "SnapshotId": "snap-1",
+            "StartTime": datetime.now(timezone.utc) - timedelta(days=90),
+        }])
+        with patch("unused_resources.boto3.client") as client:
+            client.return_value.get_caller_identity.return_value = {"Account": "123"}
+            findings = finder.find_old_ebs_snapshots(retention_days=30)
+        assert findings[0]["EstimatedMonthlySavingsUSD"] == 0.0
+
 
 class TestIdleRDS:
 
@@ -171,3 +197,52 @@ class TestBuildSummary:
         assert summary["EstimatedMonthlySavingsUSD"] == 10.5
         assert summary["UnquantifiedFindings"] == 1
         assert summary["FindingsByType"]["UnattachedEBSVolumes"] == 2
+
+
+class TestConstructor:
+
+    def test_clients_are_scoped_to_the_given_region(self):
+        """The other tests bypass __new__, so this is the only place the real
+        client wiring — and the region that must not leak across scans — runs."""
+        with patch("unused_resources.boto3.client") as client:
+            finder = UnusedResourceFinder(region="ap-south-1")
+
+        services = {call.args[0] for call in client.call_args_list}
+        assert services == {"ec2", "cloudwatch", "rds"}
+        assert {call.kwargs["region_name"] for call in client.call_args_list} == {"ap-south-1"}
+        assert finder.region == "ap-south-1"
+
+
+class TestScanAll:
+
+    _CATEGORIES = {
+        "IdleEC2Instances", "UnattachedEBSVolumes", "UnusedElasticIPs",
+        "OldEBSSnapshots", "IdleRDSInstances",
+    }
+
+    def test_returns_every_finding_category(self):
+        finder = _finder()
+        finder.ec2.get_paginator.return_value.paginate.return_value = []
+        finder.ec2.describe_addresses.return_value = {"Addresses": []}
+        finder.rds.get_paginator.return_value.paginate.return_value = []
+        with patch("unused_resources.boto3.client") as client:
+            client.return_value.get_caller_identity.return_value = {"Account": "123"}
+            results = finder.scan_all(cpu_threshold=5.0, ec2_days=14, snapshot_days=30)
+
+        assert set(results) == self._CATEGORIES
+        assert all(findings == [] for findings in results.values())
+
+    def test_thresholds_forwarded_to_each_detector(self):
+        """scan_all's positional args map cpu/threshold/retention onto the right
+        detectors — a swap here would silently mis-scan every region."""
+        finder = _finder()
+        with patch.object(finder, "find_idle_ec2_instances", return_value=[]) as idle_ec2, \
+                patch.object(finder, "find_unattached_ebs_volumes", return_value=[]), \
+                patch.object(finder, "find_unused_elastic_ips", return_value=[]), \
+                patch.object(finder, "find_old_ebs_snapshots", return_value=[]) as snaps, \
+                patch.object(finder, "find_idle_rds_instances", return_value=[]) as idle_rds:
+            finder.scan_all(cpu_threshold=12.5, ec2_days=7, snapshot_days=90)
+
+        idle_ec2.assert_called_once_with(12.5, 7)
+        snaps.assert_called_once_with(90)
+        idle_rds.assert_called_once_with(7)

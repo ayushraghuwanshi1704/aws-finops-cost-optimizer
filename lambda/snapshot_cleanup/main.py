@@ -9,7 +9,8 @@ explicitly switched to destructive mode by setting DRY_RUN=false.
 
 Environment variables:
     RETENTION_DAYS  Snapshots older than this many days are eligible (default: 30)
-    DRY_RUN         "true" (default) reports what would be deleted; "false" deletes
+    DRY_RUN         "false" enables deletion; every other value (including an
+                    unset or malformed one) stays in dry-run mode.
     SNS_TOPIC_ARN   Optional. When set, a run summary is published to this topic.
 
 Author: Mohamed Ben Lakhoua
@@ -28,7 +29,9 @@ from botocore.exceptions import ClientError
 def lambda_handler(event: Dict[str, Any], context: object) -> Dict[str, Any]:
     """Lambda function handler."""
     retention_days = int(os.environ.get("RETENTION_DAYS", "30"))
-    dry_run = os.environ.get("DRY_RUN", "true").lower() == "true"
+    # Fail-safe: only an explicit "false" arms deletion. A missing, empty,
+    # malformed or misspelt value must never reach ec2.delete_snapshot.
+    dry_run = os.environ.get("DRY_RUN", "true").lower() != "false"
 
     ec2 = boto3.client("ec2")
     account_id = boto3.client("sts").get_caller_identity()["Account"]

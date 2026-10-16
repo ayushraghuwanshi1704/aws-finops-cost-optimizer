@@ -165,7 +165,7 @@ This deploys:
 | Auto-tagger Lambda | Hourly; adds missing `Environment`/`Owner`/`CostCenter` tags | Never overwrites existing tag values |
 | EC2 scheduler Lambda | Stop 19:00 / start 07:00 UTC, weekdays | Only instances tagged `AutoScheduler=enabled` |
 | Snapshot cleanup Lambda | Daily; snapshots older than 30 days | **Dry-run by default**; `Retain` tag always wins |
-| AWS Budget | Alerts at 80%/100% actual + 100% forecasted | Email via SNS |
+| AWS Budget | Alerts at 80%/100% actual + 100% forecasted | Email sent by AWS Budgets directly (not via SNS) |
 | Cost Anomaly Detection | Per-service ML monitor, daily digest | Alerts only above `anomaly_threshold_usd` |
 | S3 report bucket | Encrypted, versioned, public access blocked | Reports auto-expire (the cost tool shouldn't hoard storage) |
 

@@ -48,7 +48,7 @@ Common issues, their causes, and fixes.
 
 ### Email subscriptions show `PendingConfirmation` forever
 
-**Cause:** SNS email subscriptions and budget notifications require the recipient to click the confirmation link.
+**Cause:** only the SNS email subscription (automation run summaries) has a confirmation state — the recipient must click the link. AWS Budgets and Cost Anomaly Detection deliver their emails without any confirmation step, so a `PendingConfirmation` row is always the SNS subscription.
 
 **Fix:** check the `alert_email` inbox (and spam) for "AWS Notification - Subscription Confirmation" and confirm it. Terraform cannot confirm on your behalf.
 

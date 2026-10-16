@@ -238,7 +238,7 @@ class CostAnalyzer:
         print("="*80 + "\n")
 
 
-def main():
+def main() -> None:
     """Main function"""
     parser = argparse.ArgumentParser(
         description="Analyze AWS costs using Cost Explorer API",

@@ -320,7 +320,7 @@ def build_summary(all_results: Dict[str, List]) -> Dict:
     }
 
 
-def main():
+def main() -> None:
     """Main function"""
     parser = argparse.ArgumentParser(
         description="Find unused AWS resources to reduce costs",

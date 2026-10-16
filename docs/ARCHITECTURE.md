@@ -79,7 +79,7 @@ Three single-purpose Lambda functions, each triggered by EventBridge rules and e
 - **AWS Budgets** — alerts at 80% and 100% of actual spend plus 100% of *forecasted* spend, so the warning arrives before the money is gone.
 - **Cost Anomaly Detection** — per-service ML monitor with a daily digest, alerting only above a configurable dollar impact to avoid noise.
 - **CloudWatch dashboard** (`dashboards/cost_overview_dashboard.json`) — estimated charges total and by service, plus invocation/error widgets for the three optimizer Lambdas (a failed optimizer run means a savings action silently didn't happen — that must be visible).
-- **SNS topic** — single fan-out point for budget alerts, anomaly alerts, and automation run summaries.
+- **SNS topic** — carries the automation run summaries published by the three Lambdas. Budget and anomaly alerts do **not** route through it: AWS Budgets and Cost Anomaly Detection send their own emails straight to `alert_email`, so the same inbox receives all three, by two different mechanisms.
 
 ### 4. Infrastructure layer (`terraform/`)
 

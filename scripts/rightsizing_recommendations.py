@@ -246,7 +246,7 @@ Examples:
     try:
         with open(args.output, "w") as f:
             json.dump(recommendations, f, indent=2)
-        print(f"✅ {len(recommendations)} recommendation(s) written to {args.output}")
+        print(f"{len(recommendations)} recommendation(s) written to {args.output}")
     except OSError as e:
         print(f"Error writing output: {e}", file=sys.stderr)
         sys.exit(1)

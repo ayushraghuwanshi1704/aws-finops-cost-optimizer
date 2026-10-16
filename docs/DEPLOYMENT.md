@@ -12,7 +12,7 @@ Step-by-step instructions for deploying the toolkit with Terraform.
 ## Step 1: Clone the repository
 
 ```bash
-git clone https://github.com/mlakhoua-rgb/aws-finops-cost-optimizer.git
+git clone https://github.com/metafive-ai/aws-finops-cost-optimizer.git
 cd aws-finops-cost-optimizer
 ```
 
