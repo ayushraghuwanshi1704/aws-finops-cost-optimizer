@@ -19,8 +19,6 @@ Both numbers are reported raw; purchase decisions need workload context
 Usage:
     python commitment_coverage.py --days 30 --output commitments.json
 
-Author: Mohamed Ben Lakhoua
-License: MIT
 """
 
 import argparse
@@ -232,7 +230,7 @@ Examples:
 
     print(f"Analyzing commitment coverage for the last {args.days} days...")
     analyzer = CommitmentAnalyzer()
-    try:
+    try:  
         report = analyzer.build_report(days=args.days)
     except (ClientError, BotoCoreError) as e:
         print(f"Error querying Cost Explorer: {e}", file=sys.stderr)

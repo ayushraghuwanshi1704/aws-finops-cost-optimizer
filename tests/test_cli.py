@@ -5,6 +5,7 @@ These cover argparse wiring, option validation, output-format dispatch and
 error exit codes — the layer the per-method tests do not reach. Every AWS
 client is mocked; no credentials or network access are required.
 """
+import csv
 import json
 from unittest.mock import MagicMock, patch
 
@@ -122,6 +123,84 @@ class TestCostAnalysisCli:
                 patch("sys.argv", ["cost_analysis.py"]):
             cost_analysis.main()
         assert "AWS Cost Analysis Summary" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# cost_analysis.main -- demo mode
+# ---------------------------------------------------------------------------
+
+class TestCostAnalysisDemoCli:
+    """--demo must produce the same report shape with boto3 never touched: the
+    patch target is the module attribute itself, so even constructing a client
+    would be recorded."""
+
+    def _run(self, argv):
+        with patch("cost_analysis.boto3") as boto3_mock, \
+                patch("sys.argv", argv):
+            cost_analysis.main()
+        return boto3_mock
+
+    def test_demo_prints_not_live_billing_warning(self, capsys):
+        self._run(["cost_analysis.py", "--demo"])
+        out = capsys.readouterr().out
+        assert "DEMO DATA" in out
+        assert "NOT LIVE AWS BILLING" in out
+        assert "Amazon EC2" in out
+        assert "$8,397.15" in out
+
+    def test_demo_makes_no_aws_calls(self):
+        """Requirement: demo mode must not create a client or reach the API."""
+        boto3_mock = self._run(["cost_analysis.py", "--demo"])
+        boto3_mock.client.assert_not_called()
+
+    def test_demo_csv_export_is_labelled_and_totalled(self, tmp_path):
+        out = tmp_path / "demo.csv"
+        self._run(["cost_analysis.py", "--demo", "--output", str(out)])
+        with open(out, newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        assert len(rows) == 6
+        assert "Source" in rows[0]
+        assert {r["Source"] for r in rows} == {"DEMO DATA — NOT LIVE AWS BILLING"}
+        total = sum(float(r["Cost"]) for r in rows)
+        assert total == pytest.approx(8397.15, abs=0.01)
+        assert sum(float(r["Percentage"]) for r in rows) == pytest.approx(100.0, abs=0.1)
+
+    def test_demo_json_export_carries_percentage_and_source(self, tmp_path):
+        out = tmp_path / "demo.json"
+        self._run(["cost_analysis.py", "--demo", "--output", str(out)])
+        records = json.loads(out.read_text())
+        assert [r["Value"] for r in records] == [
+            "Amazon EC2", "Amazon RDS", "AWS Data Transfer",
+            "AWS Lambda", "Amazon S3", "Amazon CloudWatch",
+        ]
+        assert records[0]["Percentage"] == pytest.approx(57.41, abs=0.01)
+        assert all(r["Source"] == "DEMO DATA — NOT LIVE AWS BILLING" for r in records)
+
+    def test_demo_days_scales_the_sample_costs(self, tmp_path, capsys):
+        out = tmp_path / "demo.json"
+        self._run(["cost_analysis.py", "--demo", "--days", "15", "--output", str(out)])
+        records = json.loads(out.read_text())
+        total = sum(r["Cost"] for r in records)
+        assert total == pytest.approx(8397.15 / 2, abs=0.05)
+        assert "last 15 days" in capsys.readouterr().out
+
+    def test_demo_rejects_unsupported_group_by(self, capsys):
+        """Sample data only exists for SERVICE; silently ignoring --group-by
+        would label a REGION report as if it were regional spend."""
+        with patch("cost_analysis.boto3"), \
+                patch("sys.argv", ["cost_analysis.py", "--demo", "--group-by",
+                                   "REGION"]), \
+                pytest.raises(SystemExit) as excinfo:
+            cost_analysis.main()
+        assert excinfo.value.code == 2
+        assert "--group-by SERVICE only" in capsys.readouterr().err
+
+    def test_demo_output_extension_rule_is_unchanged(self, tmp_path):
+        out = tmp_path / "demo.txt"
+        with pytest.raises(SystemExit) as excinfo:
+            self._run(["cost_analysis.py", "--demo", "--output", str(out)])
+        assert excinfo.value.code == 1
+        assert not out.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +359,13 @@ MOCK_REPORT = {
 
 
 class TestCommitmentCoverageCli:
+
+    @pytest.fixture(autouse=True)
+    def _no_aws_client(self):
+        """CommitmentAnalyzer builds a Cost Explorer client in __init__; patching
+        it here keeps these tests from reading host AWS config or credentials."""
+        with patch("commitment_coverage.boto3.client", return_value=MagicMock()):
+            yield
 
     def test_report_printed_to_stdout(self, capsys):
         """Without --output the report is still emitted for a human to read."""

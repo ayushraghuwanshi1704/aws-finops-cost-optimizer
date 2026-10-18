@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FinOps Cost Optimizer - CloudLedger-style dashboard</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div class="app">
+
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-mark">F</span>
+      <span class="brand-text">
+        <strong>FinOps Optimizer</strong>
+        <small>AWS cost &amp; waste control</small>
+      </span>
+    </div>
+
+    <nav class="nav" aria-label="Dashboard sections">
+      <button class="nav-item is-active" data-view="overview">Overview</button>
+      <button class="nav-item" data-view="breakdown">Cost breakdown</button>
+      <button class="nav-item" data-view="optimization">Optimization</button>
+      <button class="nav-item" data-view="volumes">EBS volumes</button>
+      <button class="nav-item" data-view="commitments">Commitments</button>
+      <button class="nav-item" data-view="reports">Reports</button>
+    </nav>
+
+    <div class="side-block">
+      <h2>Period</h2>
+      <div class="segmented" role="group" aria-label="Date filter">
+        <button class="seg" data-days="7">7d</button>
+        <button class="seg is-active" data-days="30">30d</button>
+        <button class="seg" data-days="90">90d</button>
+      </div>
+    </div>
+
+    <div class="side-block">
+      <h2>Data source</h2>
+      <label class="radio">
+        <input type="radio" name="mode" value="demo" checked>
+        <span>Demo sample data</span>
+      </label>
+      <label class="radio">
+        <input type="radio" name="mode" value="live">
+        <span>Live AWS account</span>
+      </label>
+      <p class="hint" id="live-hint">
+        Live mode calls Cost Explorer with your own read-only credentials.
+      </p>
+    </div>
+
+    <div class="side-block">
+      <h2>Health</h2>
+      <p class="status" id="health-status">checking&hellip;</p>
+      <p class="hint" id="health-detail"></p>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div>
+        <h1 id="view-title">Overview</h1>
+        <p class="period" id="period-line">&mdash;</p>
+        <p class="load-status" id="load-status" role="status" aria-live="polite" hidden></p>
+      </div>
+      <div class="actions">
+        <button class="btn" id="btn-refresh">Refresh</button>
+        <a class="btn" id="btn-csv" href="/api/report/csv?days=30&amp;mode=demo" download>Download CSV</a>
+        <a class="btn" id="btn-json" href="/api/report/json?days=30&amp;mode=demo" download>Download JSON</a>
+      </div>
+    </header>
+
+    <div class="banner" id="demo-banner" hidden>
+      <strong id="demo-banner-text">DEMO DATA - NOT LIVE AWS BILLING</strong>
+      <span>Sample figures only. No AWS API was called for these numbers.</span>
+    </div>
+
+    <div class="banner is-ok" id="live-banner" hidden>
+      <strong id="live-banner-text">Live AWS data connected</strong>
+      <span id="live-banner-note"></span>
+    </div>
+
+    <div class="banner is-error" id="error-banner" hidden>
+      <strong id="error-title">Live AWS data unavailable</strong>
+      <ul id="error-list"></ul>
+    </div>
+
+    <section class="view is-active" data-view="overview">
+      <div class="cards" id="metric-cards"></div>
+      <div class="grid-2">
+        <article class="panel">
+          <h2>Spend trend</h2>
+          <canvas id="trend-chart" height="220" role="img"
+                  aria-label="Unblended spend trend across the selected window"></canvas>
+          <p class="chart-note" id="trend-note"></p>
+        </article>
+        <article class="panel">
+          <h2>Spend by service</h2>
+          <canvas id="service-chart" height="220" role="img"
+                  aria-label="Share of spend by AWS service"></canvas>
+          <ul class="legend" id="service-legend"></ul>
+        </article>
+      </div>
+    </section>
+
+    <section class="view" data-view="breakdown">
+      <div class="grid-2">
+        <article class="panel">
+          <h2>Services</h2>
+          <table class="table" id="service-table">
+            <thead><tr><th>Service</th><th class="num">Cost</th><th class="num">Share</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </article>
+        <article class="panel">
+          <h2>Regions</h2>
+          <table class="table" id="region-table">
+            <thead><tr><th>Region</th><th class="num">Cost</th><th class="num">Share</th></tr></thead>
+            <tbody></tbody>
+          </table>
+          <div class="bars" id="region-bars"></div>
+        </article>
+      </div>
+    </section>
+
+    <section class="view" data-view="optimization">
+      <article class="panel">
+        <h2>Detected waste</h2>
+        <p class="chart-note" id="pricing-note"></p>
+        <div class="chips" id="waste-chips"></div>
+        <table class="table" id="waste-table">
+          <thead><tr>
+            <th>Resource</th><th>Finding</th><th class="num">Monthly saving</th><th>Action</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </article>
+      <article class="panel">
+        <h2>Right-sizing recommendations</h2>
+        <table class="table" id="rightsizing-table">
+          <thead><tr>
+            <th>Instance</th><th class="num">Max CPU</th><th class="num">Max memory</th><th>Memory source</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </article>
+    </section>
+
+    <section class="view" data-view="volumes">
+      <article class="panel">
+        <h2>EBS volume status</h2>
+        <div class="toolbar">
+          <label class="field">
+            <span>Regions</span>
+            <input class="input" id="ebs-regions" type="text" value="us-east-1"
+                   spellcheck="false" autocomplete="off"
+                   aria-label="Comma-separated AWS regions to query">
+          </label>
+          <button class="btn" id="ebs-refresh">Refresh volumes</button>
+        </div>
+        <p class="status" id="ebs-status" role="status" aria-live="polite">not loaded yet</p>
+        <p class="chart-note" id="ebs-note"></p>
+        <p class="hint">
+          Read with the one read-only EC2 call <code>DescribeVolumes</code>. Every row is a
+          volume AWS reported; a region that could not be queried is listed as an error below
+          rather than shown as having no volumes. Volumes are regional, so this table refreshes
+          on its own timer and never borrows a figure from the billing sections.
+        </p>
+        <table class="table" id="ebs-table">
+          <thead><tr>
+            <th>Volume ID</th><th>Volume state</th><th>Attachment state</th>
+            <th>Instance</th><th>Availability zone</th>
+            <th class="num">Size (GiB)</th><th>Region</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+        <ul class="list" id="ebs-errors"></ul>
+      </article>
+    </section>
+
+    <section class="view" data-view="commitments">
+      <div class="cards" id="commitment-cards"></div>
+      <article class="panel">
+        <h2>Observations</h2>
+        <ul class="list" id="commitment-observations"></ul>
+        <p class="hint">
+          Utilization and coverage are reported as measured. Purchase decisions
+          need workload context and stay with a human.
+        </p>
+      </article>
+    </section>
+
+    <section class="view" data-view="reports">
+      <article class="panel">
+        <h2>Export the current view</h2>
+        <p class="hint">
+          Downloads carry the selected period and data source. Demo exports keep
+          a <code>Source</code> column so a sample file can never be mistaken for
+          a billing export.
+        </p>
+        <div class="actions">
+          <a class="btn btn-primary" id="btn-csv-2" href="/api/report/csv?days=30&amp;mode=demo" download>CSV report</a>
+          <a class="btn btn-primary" id="btn-json-2" href="/api/report/json?days=30&amp;mode=demo" download>JSON report</a>
+        </div>
+        <pre class="preview" id="csv-preview">loading preview&hellip;</pre>
+      </article>
+    </section>
+
+    <footer class="footer">
+      <span id="source-line"></span>
+      <span id="generated-line"></span>
+    </footer>
+  </main>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

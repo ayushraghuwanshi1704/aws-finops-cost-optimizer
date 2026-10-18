@@ -6,11 +6,14 @@ This script queries AWS Cost Explorer API to generate detailed cost reports
 by service, region, account, or custom tags. It provides visibility into
 spending patterns and helps identify cost optimization opportunities.
 
+With --demo the same report is built from labelled sample data, so the output
+format can be shown or tested without AWS credentials or Cost Explorer access.
+
 Usage:
     python cost_analysis.py --days 30 --group-by SERVICE --output report.csv
+    python cost_analysis.py --demo            # sample data, no AWS access needed
 
-Author: Mohamed Ben Lakhoua
-License: MIT
+
 """
 
 import argparse
@@ -19,21 +22,74 @@ from botocore.exceptions import BotoCoreError, ClientError
 import csv
 import json
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 import sys
+
+
+DEMO_WARNING = "DEMO DATA — NOT LIVE AWS BILLING"
+
+# Illustrative monthly spend for a mid-size account. Used only by --demo so the
+# report format can be shown without credentials or Cost Explorer access.
+DEMO_SAMPLE_MONTHLY_COSTS: Dict[str, float] = {
+    "Amazon EC2": 4820.55,
+    "Amazon RDS": 2145.30,
+    "AWS Data Transfer": 618.42,
+    "AWS Lambda": 402.17,
+    "Amazon S3": 289.63,
+    "Amazon CloudWatch": 121.08,
+}
+
+DEMO_BASELINE_DAYS = 30
+
+
+def analysis_window(days: int) -> Tuple[str, str]:
+    """Return the (start, end) YYYY-MM-DD window for a `days`-long lookback."""
+    end_date = datetime.now().date()
+    start_date = end_date - timedelta(days=days)
+    return start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d")
+
+
+def demo_cost_records(days: int = 30) -> List[Dict]:
+    """
+    Build sample cost records without touching AWS.
+
+    Returns the same record shape that CostAnalyzer.analyze_costs produces, so
+    percentage calculation, summary printing and CSV/JSON export are shared
+    between demo and live runs. Monthly sample figures are scaled to `days`.
+    """
+    start_str, end_str = analysis_window(days)
+    scale = days / DEMO_BASELINE_DAYS
+
+    cost_records: List[Dict] = [
+        {
+            "PeriodStart": start_str,
+            "PeriodEnd": end_str,
+            "Dimension": "SERVICE",
+            "Value": service,
+            "Cost": round(amount * scale, 2),
+            "Currency": "USD",
+            "Source": DEMO_WARNING,
+        }
+        for service, amount in DEMO_SAMPLE_MONTHLY_COSTS.items()
+    ]
+
+    cost_records.sort(key=lambda x: x["Cost"], reverse=True)
+    return cost_records
 
 
 class CostAnalyzer:
     """AWS Cost Explorer analysis tool"""
 
-    def __init__(self, region: str = "us-east-1"):
+    def __init__(self, region: str = "us-east-1", demo: bool = False):
         """
         Initialize the Cost Analyzer
 
         Args:
             region: AWS region for Cost Explorer API (default: us-east-1)
+            demo: When True no Cost Explorer client is created, so the
+                instance can format sample data without AWS credentials.
         """
-        self.client = boto3.client('ce', region_name=region)
+        self.client = None if demo else boto3.client('ce', region_name=region)
 
     def get_cost_and_usage(
         self,
@@ -102,12 +158,7 @@ class CostAnalyzer:
         Returns:
             List of cost records with service/region and cost information
         """
-        end_date = datetime.now().date()
-        start_date = end_date - timedelta(days=days)
-
-        # Format dates for API
-        start_str = start_date.strftime("%Y-%m-%d")
-        end_str = end_date.strftime("%Y-%m-%d")
+        start_str, end_str = analysis_window(days)
 
         # Query Cost Explorer
         group_by = [{"Type": "DIMENSION", "Key": group_by_dimension}]
@@ -207,13 +258,15 @@ class CostAnalyzer:
             print(f"Error writing JSON file: {e}", file=sys.stderr)
             sys.exit(1)
 
-    def print_summary(self, cost_records: List[Dict], top_n: int = 10):
+    def print_summary(self, cost_records: List[Dict], top_n: int = 10,
+                      warning: Optional[str] = None):
         """
         Print a summary of costs to console
 
         Args:
             cost_records: List of cost records
             top_n: Number of top items to display
+            warning: Optional banner printed inside the summary box
         """
         if not cost_records:
             print("No cost data available")
@@ -222,6 +275,8 @@ class CostAnalyzer:
         total_cost = self.calculate_total_cost(cost_records)
 
         print("\n" + "="*80)
+        if warning:
+            print(f"*** {warning} ***")
         print("AWS Cost Analysis Summary")
         print("="*80)
         print(f"Total Cost: ${total_cost:,.2f} {cost_records[0]['Currency']}")
@@ -253,6 +308,9 @@ Examples:
 
   # Quick summary for last 7 days
   python cost_analysis.py --days 7 --group-by SERVICE
+
+  # Sample data, no AWS credentials or Cost Explorer access needed
+  python cost_analysis.py --demo --output demo_report.csv
         """
     )
 
@@ -291,23 +349,40 @@ Examples:
         help="Number of top items to display in summary (default: 10)"
     )
 
+    parser.add_argument(
+        "--demo",
+        action="store_true",
+        help="Use labelled sample data; makes no AWS calls and needs no credentials"
+    )
+
     args = parser.parse_args()
 
-    # Initialize analyzer
-    analyzer = CostAnalyzer(region=args.region)
+    if args.demo and args.group_by != "SERVICE":
+        parser.error("--demo provides sample data for --group-by SERVICE only")
 
-    # Analyze costs
-    print(f"Analyzing AWS costs for the last {args.days} days...")
-    cost_records = analyzer.analyze_costs(
-        days=args.days,
-        group_by_dimension=args.group_by
-    )
+    # Initialize analyzer (demo mode creates no Cost Explorer client at all)
+    analyzer = CostAnalyzer(region=args.region, demo=args.demo)
+
+    if args.demo:
+        print(f"Building DEMO report for the last {args.days} days — no AWS "
+              f"credentials or Cost Explorer access required.")
+        cost_records = demo_cost_records(days=args.days)
+    else:
+        print(f"Analyzing AWS costs for the last {args.days} days...")
+        cost_records = analyzer.analyze_costs(
+            days=args.days,
+            group_by_dimension=args.group_by
+        )
 
     # Add percentage calculations
     cost_records = analyzer.calculate_percentage(cost_records)
 
     # Print summary
-    analyzer.print_summary(cost_records, top_n=args.top)
+    analyzer.print_summary(
+        cost_records,
+        top_n=args.top,
+        warning=DEMO_WARNING if args.demo else None,
+    )
 
     # Export if output file specified
     if args.output:

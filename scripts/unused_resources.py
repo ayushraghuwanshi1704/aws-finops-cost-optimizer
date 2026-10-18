@@ -15,8 +15,6 @@ Usage:
     python unused_resources.py --region us-east-1 --output unused.json
     python unused_resources.py --all-regions --output unused.json
 
-Author: Mohamed Ben Lakhoua
-License: MIT
 """
 
 import argparse

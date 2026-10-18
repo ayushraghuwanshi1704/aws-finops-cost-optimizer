@@ -14,8 +14,6 @@ Usage:
     python rightsizing_recommendations.py --region eu-west-1 --output recs.json
     python rightsizing_recommendations.py --region us-east-1 --days 30 --cpu-threshold 50 --output recs.json
 
-Author: Mohamed Ben Lakhoua
-License: MIT
 """
 
 import argparse

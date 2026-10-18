@@ -2,12 +2,18 @@
 Unit tests for cost_analysis.py
 """
 import json
-from unittest.mock import MagicMock
+from datetime import datetime
+from unittest.mock import MagicMock, patch
 
 import pytest
 from botocore.exceptions import ClientError
 
-from cost_analysis import CostAnalyzer
+from cost_analysis import (
+    DEMO_SAMPLE_MONTHLY_COSTS,
+    DEMO_WARNING,
+    CostAnalyzer,
+    demo_cost_records,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -45,7 +51,10 @@ MOCK_CE_RESPONSE = {
 class TestCostAnalyzer:
 
     def setup_method(self):
-        self.analyzer = CostAnalyzer(region="us-east-1")
+        # boto3 is patched so construction never reads host AWS config or
+        # credentials; the client is replaced by a mock immediately below.
+        with patch("cost_analysis.boto3"):
+            self.analyzer = CostAnalyzer(region="us-east-1")
         self.analyzer.client = MagicMock()
         self.analyzer.client.get_cost_and_usage.return_value = MOCK_CE_RESPONSE
 
@@ -174,7 +183,8 @@ class TestFailurePaths:
     """Error handling that decides whether a run fails loudly or silently."""
 
     def setup_method(self):
-        self.analyzer = CostAnalyzer(region="us-east-1")
+        with patch("cost_analysis.boto3"):
+            self.analyzer = CostAnalyzer(region="us-east-1")
         self.analyzer.client = MagicMock()
 
     def test_query_error_exits_nonzero(self, capsys):
@@ -211,3 +221,96 @@ class TestFailurePaths:
         with pytest.raises(SystemExit) as excinfo:
             self.analyzer.export_to_json([{"Value": "Amazon EC2"}], str(output))
         assert excinfo.value.code == 1
+
+
+class TestDemoMode:
+    """--demo formats labelled sample data through the same pipeline as live
+    data, so the record shape must stay compatible."""
+
+    def _analyzer(self):
+        """A live analyzer whose Cost Explorer client is a mock, so construction
+        never reads host AWS config."""
+        with patch("cost_analysis.boto3"):
+            analyzer = CostAnalyzer(region="us-east-1")
+        analyzer.client = MagicMock()
+        analyzer.client.get_cost_and_usage.return_value = MOCK_CE_RESPONSE
+        return analyzer
+
+    def _live_record_keys(self):
+        return set(self._analyzer().analyze_costs(days=30)[0].keys())
+
+    def test_demo_records_extend_the_live_record_shape(self):
+        """Demo adds only the Source label — every field the summary, the
+        percentage maths and the CSV writer depend on is identical."""
+        assert set(demo_cost_records(days=30)[0].keys()) - self._live_record_keys() \
+            == {"Source"}
+
+    def test_every_demo_record_is_labelled_as_sample_data(self):
+        records = demo_cost_records(days=30)
+        assert records, "demo data must never be empty"
+        for record in records:
+            assert record["Source"] == DEMO_WARNING
+            assert record["Dimension"] == "SERVICE"
+            assert record["Currency"] == "USD"
+
+    def test_demo_covers_the_expected_services(self):
+        values = {r["Value"] for r in demo_cost_records(days=30)}
+        assert values == {
+            "Amazon EC2", "Amazon RDS", "AWS Data Transfer",
+            "AWS Lambda", "Amazon S3", "Amazon CloudWatch",
+        }
+
+    def test_demo_totals_at_the_monthly_baseline(self):
+        records = demo_cost_records(days=30)
+        costs = [r["Cost"] for r in records]
+        assert costs == sorted(costs, reverse=True)
+        analyzer = CostAnalyzer(region="us-east-1", demo=True)
+        assert abs(analyzer.calculate_total_cost(records) - 8397.15) < 0.01
+
+    def test_demo_costs_scale_with_the_requested_window(self):
+        """A 7-day report must not show a 30-day bill against a 7-day period."""
+        monthly = {r["Value"]: r["Cost"] for r in demo_cost_records(days=30)}
+        half = {r["Value"]: r["Cost"] for r in demo_cost_records(days=15)}
+        for service, amount in monthly.items():
+            assert half[service] == pytest.approx(amount / 2, abs=0.01)
+
+    def test_demo_window_matches_the_requested_days(self):
+        records = demo_cost_records(days=30)
+        start = datetime.strptime(records[0]["PeriodStart"], "%Y-%m-%d").date()
+        end = datetime.strptime(records[0]["PeriodEnd"], "%Y-%m-%d").date()
+        assert (end - start).days == 30
+
+    def test_demo_records_reuse_the_shared_percentage_helper(self):
+        records = CostAnalyzer(region="us-east-1", demo=True).calculate_percentage(
+            demo_cost_records(days=30)
+        )
+        assert abs(sum(r["Percentage"] for r in records) - 100.0) < 0.1
+
+    def test_demo_analyzer_creates_no_cost_explorer_client(self):
+        """The whole point of --demo: no client, therefore no credentials and
+        no Cost Explorer access."""
+        with patch("cost_analysis.boto3") as boto3_mock:
+            analyzer = CostAnalyzer(region="us-east-1", demo=True)
+        boto3_mock.client.assert_not_called()
+        assert analyzer.client is None
+
+    def test_live_analyzer_still_creates_a_regional_client(self):
+        """Without --demo the live path is unchanged."""
+        with patch("cost_analysis.boto3") as boto3_mock:
+            CostAnalyzer(region="ap-south-1")
+        boto3_mock.client.assert_called_once_with("ce", region_name="ap-south-1")
+
+    def test_demo_summary_prints_the_not_live_billing_warning(self, capsys):
+        analyzer = CostAnalyzer(region="us-east-1", demo=True)
+        analyzer.print_summary(demo_cost_records(days=30), warning=DEMO_WARNING)
+        captured = capsys.readouterr().out
+        assert DEMO_WARNING in captured
+        assert "8,397.15" in captured
+        for service in DEMO_SAMPLE_MONTHLY_COSTS:
+            assert service in captured
+
+    def test_live_summary_has_no_demo_warning(self, capsys):
+        """The banner is opt-in so a real billing report is never decorated."""
+        analyzer = self._analyzer()
+        analyzer.print_summary(analyzer.analyze_costs(days=30))
+        assert "DEMO" not in capsys.readouterr().out

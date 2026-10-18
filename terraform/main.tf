@@ -1,5 +1,4 @@
 # AWS FinOps Cost Optimizer - Main Terraform Configuration
-# License: MIT
 
 terraform {
   required_version = ">= 1.6.0"

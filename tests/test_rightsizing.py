@@ -2,7 +2,7 @@
 Unit tests for rightsizing_recommendations.py
 """
 from datetime import datetime, timezone
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from rightsizing_recommendations import (
     RightSizingRecommender,
@@ -78,7 +78,10 @@ class TestRightSizingRecommender:
 
     def _make_recommender(self, cpu_values, mem_values=None):
         """Create a recommender with mocked AWS clients."""
-        r = RightSizingRecommender(region="eu-west-1")
+        # boto3 is patched so construction never reads host AWS config or
+        # credentials; both clients are replaced by mocks immediately below.
+        with patch("rightsizing_recommendations.boto3"):
+            r = RightSizingRecommender(region="eu-west-1")
         r.ec2 = MagicMock()
         r.cloudwatch = MagicMock()
 
